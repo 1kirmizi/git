@@ -437,12 +437,64 @@ static inline int git_offset_1st_component(const char *path)
 #endif
 
 #ifndef is_path_owned_by_current_user
+
+#ifdef __TANDEM
+#define ROOT_UID 65535
+#else
+#define ROOT_UID 0
+#endif
+
+/*
+ * This helper function overrides a ROOT_UID with the one provided by
+ * an environment variable, do not use unless the original user is
+ * root or could be used as means to escalate to root privileges.
+ *
+ * PORTABILITY WARNING:
+ * This code assumes uid_t is unsigned because that is what sudo does.
+ * If your uid_t type is signed and all your ids are positive then it
+ * should all work fine, but need to make sure sudo never generates a
+ * value higher than what can be represented by your uid_t type or a
+ * negative value or it will trigger wraparound bugs.
+ *
+ * If that happens the uid used might be incorrect and then trigger
+ * an access error from the filesystem itself.
+ *
+ * In the unlikely scenario this happened to you, and that is how you
+ * got to this message, we would like to know about it by letting us
+ * now with an email to git@vger.kernel.org indicating which platform,
+ * you are running on and which version of sudo you used to see if we
+ * can provide you a patch that would prevent this issue in the future.
+ */
+static inline void extract_id_from_env(const char *env, uid_t *id)
+{
+	const char *real_uid = getenv(env);
+
+	/* discard anything empty to avoid a more complex check below */
+	if (real_uid && *real_uid) {
+		char *endptr = NULL;
+		unsigned long env_id;
+
+		errno = 0;
+		/* silent overflow errors could trigger a bug below */
+		env_id = strtoul(real_uid, &endptr, 10);
+		if (!*endptr && !errno)
+			*id = env_id;
+	}
+}
+
 static inline int is_path_owned_by_current_uid(const char *path)
 {
 	struct stat st;
+	uid_t euid;
+
 	if (lstat(path, &st))
 		return 0;
-	return st.st_uid == geteuid();
+
+	euid = geteuid();
+	if (euid == ROOT_UID)
+		extract_id_from_env("SUDO_UID", &euid);
+
+	return st.st_uid == euid;
 }
 
 #define is_path_owned_by_current_user is_path_owned_by_current_uid
